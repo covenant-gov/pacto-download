@@ -49,14 +49,27 @@ async function rotateTagline() {
 (fadeInChars(words[0]), setInterval(rotateTagline, 3e3));
 const GITHUB_REPO = "covenant-gov/pacto-app",
   GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
+  GITHUB_RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=10`,
   CACHE_KEY = "pacto_releases_cache",
   CACHE_DURATION = 3e5;
+// Fallback for private/unreachable GitHub API; update on each new release.
+const STATIC_RELEASE_FALLBACK = {
+  tag_name: "v0.1.0",
+  assets: [
+    "pacto-0.1.0-1.x86_64.rpm",
+    "pacto_0.1.0_amd64.AppImage",
+    "pacto_0.1.0_amd64.deb",
+    "pacto_0.1.0_x64-setup.exe",
+    "pacto_0.1.0_x64_en-US.msi",
+  ],
+};
 function getCachedData() {
   try {
     const e = localStorage.getItem(CACHE_KEY);
     if (e) {
       const { data: n, timestamp: t } = JSON.parse(e);
-      if (Date.now() - t < 3e5) return n;
+      if (Date.now() - t < CACHE_DURATION && n && Array.isArray(n.assets)) return n;
+      localStorage.removeItem(CACHE_KEY);
     }
   } catch (e) {
     console.error("Error reading cache:", e);
@@ -65,37 +78,77 @@ function getCachedData() {
 }
 function setCachedData(e) {
   try {
-    localStorage.setItem(
-      CACHE_KEY,
-      JSON.stringify({ data: e, timestamp: Date.now() }),
-    );
+    e &&
+      Array.isArray(e.assets) &&
+      localStorage.setItem(
+        CACHE_KEY,
+        JSON.stringify({ data: e, timestamp: Date.now() }),
+      );
   } catch (e) {
     console.error("Error writing cache:", e);
   }
 }
+function buildStaticFallbackRelease() {
+  if (
+    !STATIC_RELEASE_FALLBACK ||
+    !STATIC_RELEASE_FALLBACK.tag_name ||
+    !Array.isArray(STATIC_RELEASE_FALLBACK.assets)
+  )
+    return null;
+  const { tag_name: e, assets: n } = STATIC_RELEASE_FALLBACK;
+  return {
+    tag_name: e,
+    assets: n.map((n) => ({
+      name: n,
+      browser_download_url: `https://github.com/${GITHUB_REPO}/releases/download/${e}/${n}`,
+    })),
+  };
+}
+async function fetchReleaseData() {
+  const e = getCachedData();
+  if (e) return e;
+  const n = await fetch(GITHUB_API);
+  if (n.ok) {
+    const e = await n.json();
+    if (e && Array.isArray(e.assets) && e.assets.length > 0) return (setCachedData(e), e);
+  }
+  const t = await fetch(GITHUB_RELEASES_API);
+  if (t.ok) {
+    const a = await t.json();
+    const o = Array.isArray(a)
+      ? a.find((e) => !e.draft && Array.isArray(e.assets) && e.assets.length > 0)
+      : null;
+    if (o) return (setCachedData(o), o);
+  }
+  const s = buildStaticFallbackRelease();
+  if (s) return s;
+  throw new Error(`GitHub API error: ${n.status}/${t.status}`);
+}
 function detectOS() {
-  const e = window.navigator.userAgent,
-    n = window.navigator.platform;
-  if (-1 !== ["Macintosh", "MacIntel", "MacPPC", "Mac68K"].indexOf(n)) {
+  const e = (window.navigator.userAgent || "").toLowerCase(),
+    n = (window.navigator.platform || "").toLowerCase();
+  if (n.includes("mac")) {
     return {os: "macOS", buttonText: "Download for macOS", filePattern: /\.dmg$/i};
   }
-  if (-1 !== ["Win32", "Win64", "Windows", "WinCE"].indexOf(n)) {
+  if (n.includes("win")) {
     return {
       os: "Windows",
       buttonText: "Download for Windows",
       filePattern: /\.(exe|msi)$/i,
     };
   }
-  if (e.includes("Android") || -1 !== ["Android"].indexOf(n)) {
+  if (e.includes("android") || n.includes("android")) {
     return {os: "Android", buttonText: "Download for Android", filePattern: /\.apk$/i};
   }
   if (
-    -1 !== ["iPhone", "iPad", "iPod"].indexOf(n) ||
-    (e.includes("Mac") && "ontouchend" in document)
+    n.includes("iphone") ||
+    n.includes("ipad") ||
+    n.includes("ipod") ||
+    (e.includes("mac") && "ontouchend" in document)
   ) {
     return {os: "iOS", buttonText: "Coming Soon", filePattern: null};
   }
-  if (-1 !== ["Linux", "X11"].indexOf(n)) {
+  if (n.includes("linux") || n.includes("x11")) {
     return {
       os: "Linux",
       buttonText: "Download for Linux",
@@ -103,6 +156,57 @@ function detectOS() {
     };
   }
   return {os: "Other", buttonText: "Download Pacto", filePattern: null};
+}
+function getDownloadArchitecture() {
+  const e = `${window.navigator.userAgent} ${window.navigator.platform}`.toLowerCase();
+  return e.includes("arm64") || e.includes("aarch64")
+    ? "arm64"
+    : e.includes("x86_64") || e.includes("x64") || e.includes("amd64") || e.includes("intel")
+      ? "x64"
+        : e.includes("i686") || e.includes("i386") || /\bx86\b/.test(e)
+        ? "x86"
+        : null;
+}
+function getAssetPriorityOrder(e) {
+  return "Windows" === e
+    ? [".exe", ".msi"]
+    : "macOS" === e
+      ? [".dmg"]
+      : "Android" === e
+        ? [".apk"]
+        : "Linux" === e
+          ? [".AppImage", ".deb", ".rpm", ".tar.gz", ".tgz"]
+          : [];
+}
+function getAssetScore(asset, extensionOrder, preferredArch) {
+  const filename = asset.name.toLowerCase();
+  let extensionPriority = extensionOrder.length;
+  extensionOrder.forEach((extension, index) => {
+    filename.endsWith(extension.toLowerCase()) &&
+      (extensionPriority = index);
+  });
+  const variant = (simplifyFilename(asset.name).variant || "").toLowerCase();
+  const matchesPreferredArch = preferredArch
+    ? preferredArch === "x64"
+      ? variant.includes("x64")
+      : preferredArch === "x86"
+        ? variant.includes("x86")
+        : preferredArch === "arm64"
+          ? variant.includes("arm64")
+          : !1
+    : !1;
+  return extensionPriority * 10 + (matchesPreferredArch ? 0 : 1);
+}
+function getBestAssetForOS(e, n, t) {
+  if (!Array.isArray(e)) return null;
+  const o = getDownloadArchitecture(),
+    s = getAssetPriorityOrder(n);
+  const i = e.filter((e) => e.name && t.test(e.name));
+  if (0 === i.length) return null;
+  if (0 === s.length) return i[0] || null;
+  const c = i.map((e) => ({asset: e, score: getAssetScore(e, s, o)})),
+    l = [...c].sort((e, n) => e.score - n.score);
+  return (l[0] && l[0].asset) || i[0];
 }
 async function setupDownloadButton() {
   const e = document.getElementById("downloadBtn"),
@@ -124,16 +228,12 @@ async function setupDownloadButton() {
       e.insertBefore(s, n));
   }
   try {
-    let n = getCachedData();
-    if (!n) {
-      const e = await fetch(GITHUB_API);
-      ((n = await e.json()), setCachedData(n));
-    }
+    const n = await fetchReleaseData();
     if (n.assets && o) {
-      const t = n.assets.find((e) => o.test(e.name));
-      t
-        ? ((e.href = t.browser_download_url),
-          console.log(`Found download: ${t.name}`))
+      const s = getBestAssetForOS(n.assets, t, o);
+      s
+        ? ((e.href = s.browser_download_url),
+          console.log(`Found download: ${s.name}`))
         : ((e.href = `https://github.com/${GITHUB_REPO}/releases/latest`),
           console.log("No matching asset found, linking to releases page"));
     } else e.href = `https://github.com/${GITHUB_REPO}/releases/latest`;
@@ -172,7 +272,7 @@ function simplifyFilename(e) {
       : e.includes(".apk")
         ? { platform: "Android", variant: n || null }
         : e.includes(".dmg")
-          ? { platform: "macOS", variant: null }
+          ? { platform: "macOS", variant: n || null }
           : e.includes(".AppImage")
             ? {
                 platform: "Linux",
@@ -195,11 +295,7 @@ function simplifyFilename(e) {
 async function populateAllDownloads() {
   const e = document.getElementById("downloadsList");
   try {
-    let n = getCachedData();
-    if (!n) {
-      const e = await fetch(GITHUB_API);
-      ((n = await e.json()), setCachedData(n));
-    }
+    const n = await fetchReleaseData();
     if (n.assets && n.assets.length > 0) {
       const t = n.assets.filter(
           (e) =>
