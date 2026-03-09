@@ -47,82 +47,25 @@ async function rotateTagline() {
     (isAnimating = !1));
 }
 (fadeInChars(words[0]), setInterval(rotateTagline, 3e3));
-const GITHUB_REPO = "covenant-gov/pacto-app",
-  GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
-  GITHUB_RELEASES_API = `https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=10`,
-  CACHE_KEY = "pacto_releases_cache",
-  CACHE_DURATION = 3e5;
-// Fallback for private/unreachable GitHub API; update on each new release.
-const STATIC_RELEASE_FALLBACK = {
-  tag_name: "v0.1.0",
-  assets: [
-    "pacto-0.1.0-1.x86_64.rpm",
-    "pacto_0.1.0_amd64.AppImage",
-    "pacto_0.1.0_amd64.deb",
-    "pacto_0.1.0_x64-setup.exe",
-    "pacto_0.1.0_x64_en-US.msi",
-  ],
-};
-function getCachedData() {
-  try {
-    const e = localStorage.getItem(CACHE_KEY);
-    if (e) {
-      const { data: n, timestamp: t } = JSON.parse(e);
-      if (Date.now() - t < CACHE_DURATION && n && Array.isArray(n.assets)) return n;
-      localStorage.removeItem(CACHE_KEY);
-    }
-  } catch (e) {
-    console.error("Error reading cache:", e);
-  }
-  return null;
-}
-function setCachedData(e) {
-  try {
-    e &&
-      Array.isArray(e.assets) &&
-      localStorage.setItem(
-        CACHE_KEY,
-        JSON.stringify({ data: e, timestamp: Date.now() }),
-      );
-  } catch (e) {
-    console.error("Error writing cache:", e);
-  }
-}
-function buildStaticFallbackRelease() {
-  if (
-    !STATIC_RELEASE_FALLBACK ||
-    !STATIC_RELEASE_FALLBACK.tag_name ||
-    !Array.isArray(STATIC_RELEASE_FALLBACK.assets)
-  )
-    return null;
-  const { tag_name: e, assets: n } = STATIC_RELEASE_FALLBACK;
+const GITHUB_REPO = "covenant-gov/pacto-app";
+function getReleaseData() {
+  const e = window.PACTO_DOWNLOAD_CONFIG || {};
+  const n = e.repo || GITHUB_REPO;
+  const t = e.releaseTag || "";
+  const a = Array.isArray(e.files) ? e.files : [];
   return {
-    tag_name: e,
-    assets: n.map((n) => ({
-      name: n,
-      browser_download_url: `https://github.com/${GITHUB_REPO}/releases/download/${e}/${n}`,
+    repo: n,
+    releaseTag: t,
+    assets: a.map((e) => ({
+      name: e,
+      browser_download_url: `https://github.com/${n}/releases/download/${t}/${e}`,
     })),
   };
 }
-async function fetchReleaseData() {
-  const e = getCachedData();
-  if (e) return e;
-  const n = await fetch(GITHUB_API);
-  if (n.ok) {
-    const e = await n.json();
-    if (e && Array.isArray(e.assets) && e.assets.length > 0) return (setCachedData(e), e);
-  }
-  const t = await fetch(GITHUB_RELEASES_API);
-  if (t.ok) {
-    const a = await t.json();
-    const o = Array.isArray(a)
-      ? a.find((e) => !e.draft && Array.isArray(e.assets) && e.assets.length > 0)
-      : null;
-    if (o) return (setCachedData(o), o);
-  }
-  const s = buildStaticFallbackRelease();
-  if (s) return s;
-  throw new Error(`GitHub API error: ${n.status}/${t.status}`);
+function getReleasesPageUrl(e, n) {
+  return n
+    ? `https://github.com/${e}/releases/tag/${n}`
+    : `https://github.com/${e}/releases`;
 }
 function detectOS() {
   const e = (window.navigator.userAgent || "").toLowerCase(),
@@ -157,58 +100,7 @@ function detectOS() {
   }
   return {os: "Other", buttonText: "Download Pacto", filePattern: null};
 }
-function getDownloadArchitecture() {
-  const e = `${window.navigator.userAgent} ${window.navigator.platform}`.toLowerCase();
-  return e.includes("arm64") || e.includes("aarch64")
-    ? "arm64"
-    : e.includes("x86_64") || e.includes("x64") || e.includes("amd64") || e.includes("intel")
-      ? "x64"
-        : e.includes("i686") || e.includes("i386") || /\bx86\b/.test(e)
-        ? "x86"
-        : null;
-}
-function getAssetPriorityOrder(e) {
-  return "Windows" === e
-    ? [".exe", ".msi"]
-    : "macOS" === e
-      ? [".dmg"]
-      : "Android" === e
-        ? [".apk"]
-        : "Linux" === e
-          ? [".AppImage", ".deb", ".rpm", ".tar.gz", ".tgz"]
-          : [];
-}
-function getAssetScore(asset, extensionOrder, preferredArch) {
-  const filename = asset.name.toLowerCase();
-  let extensionPriority = extensionOrder.length;
-  extensionOrder.forEach((extension, index) => {
-    filename.endsWith(extension.toLowerCase()) &&
-      (extensionPriority = index);
-  });
-  const variant = (simplifyFilename(asset.name).variant || "").toLowerCase();
-  const matchesPreferredArch = preferredArch
-    ? preferredArch === "x64"
-      ? variant.includes("x64")
-      : preferredArch === "x86"
-        ? variant.includes("x86")
-        : preferredArch === "arm64"
-          ? variant.includes("arm64")
-          : !1
-    : !1;
-  return extensionPriority * 10 + (matchesPreferredArch ? 0 : 1);
-}
-function getBestAssetForOS(e, n, t) {
-  if (!Array.isArray(e)) return null;
-  const o = getDownloadArchitecture(),
-    s = getAssetPriorityOrder(n);
-  const i = e.filter((e) => e.name && t.test(e.name));
-  if (0 === i.length) return null;
-  if (0 === s.length) return i[0] || null;
-  const c = i.map((e) => ({asset: e, score: getAssetScore(e, s, o)})),
-    l = [...c].sort((e, n) => e.score - n.score);
-  return (l[0] && l[0].asset) || i[0];
-}
-async function setupDownloadButton() {
+function setupDownloadButton() {
   const e = document.getElementById("downloadBtn"),
     n = document.getElementById("downloadText"),
     { os: t, buttonText: a, filePattern: o } = detectOS();
@@ -227,20 +119,16 @@ async function setupDownloadButton() {
       (s.innerHTML = getOSIcon(t)),
       e.insertBefore(s, n));
   }
-  try {
-    const n = await fetchReleaseData();
-    if (n.assets && o) {
-      const s = getBestAssetForOS(n.assets, t, o);
-      s
-        ? ((e.href = s.browser_download_url),
-          console.log(`Found download: ${s.name}`))
-        : ((e.href = `https://github.com/${GITHUB_REPO}/releases/latest`),
-          console.log("No matching asset found, linking to releases page"));
-    } else e.href = `https://github.com/${GITHUB_REPO}/releases/latest`;
-  } catch (n) {
-    (console.error("Error fetching release:", n),
-      (e.href = `https://github.com/${GITHUB_REPO}/releases/latest`));
-  }
+  const s = getReleaseData(),
+    i = getReleasesPageUrl(s.repo, s.releaseTag);
+  if (s.assets && o) {
+    const n = s.assets.find((e) => o.test(e.name));
+    n
+      ? ((e.href = n.browser_download_url),
+        console.log(`Found download: ${n.name}`))
+      : ((e.href = i),
+        console.log("No matching asset found, linking to releases page"));
+  } else e.href = i;
 }
 function getOSIcon(e) {
   const n = {
@@ -292,107 +180,101 @@ function simplifyFilename(e) {
                     }
                   : { platform: e, variant: null };
 }
-async function populateAllDownloads() {
+function populateAllDownloads() {
   const e = document.getElementById("downloadsList");
-  try {
-    const n = await fetchReleaseData();
-    if (n.assets && n.assets.length > 0) {
-      const t = n.assets.filter(
-          (e) =>
-            !(
-              e.name.endsWith(".sig") ||
-              e.name.endsWith(".txt") ||
-              e.name.endsWith(".json") ||
-              (e.name.includes(".dmg") &&
-                (e.name.includes("aarch64") || e.name.includes("arm64")))
-            ),
-        ),
-        { os: a } = detectOS();
-      (t.sort((e, n) => {
-        const t = (e) => {
-            const n = e.includes(".exe") || e.includes(".msi"),
-              t = e.includes(".dmg"),
-              o = e.includes(".apk"),
-              s = !n && !t && !o;
-            return "Windows" === a && n
-              ? e.includes(".exe")
-                ? 1
-                : 2
-              : ("macOS" === a && t) ||
-                  ("Android" === a && o) ||
-                  ("Linux" === a && s)
-                ? 1
-                : e.includes(".exe")
-                  ? 10
-                  : e.includes(".msi")
-                    ? 11
-                    : e.includes(".dmg")
-                      ? 20
-                      : e.includes(".apk")
-                        ? 30
-                        : 40;
-          },
-          o = t(e.name),
-          s = t(n.name);
-        return o !== s ? o - s : e.name.localeCompare(n.name);
-      }),
-        t.forEach((t) => {
-          const a = document.createElement("div");
-          a.className = "download-item";
-          const o = document.createElement("div");
-          o.className = "download-name";
-          const s = document.createElement("div");
-          s.className = "os-icon";
-          const { platform: i, variant: c } = simplifyFilename(t.name);
-          let l = "Linux";
-          (t.name.includes(".exe") || t.name.includes(".msi")
-            ? (l = "Windows")
-            : t.name.includes(".apk")
-              ? (l = "Android")
-              : t.name.includes(".dmg") && (l = "macOS"),
-            (s.innerHTML = getOSIcon(l)));
-          const d = document.createElement("div");
-          d.className = "download-name-text";
-          const r = document.createElement("span");
-          if (
-            ((r.className = "download-name-platform"),
-            (r.textContent = i),
-            d.appendChild(r),
-            c)
-          ) {
-            const e = document.createElement("span");
-            ((e.className = "download-name-variant"),
-              (e.textContent = c),
-              d.appendChild(e));
-          }
-          (o.appendChild(s), o.appendChild(d));
-          const m = document.createElement("div");
-          m.className = "download-links";
-          const u = document.createElement("a");
-          ((u.href = t.browser_download_url),
-            (u.className = "download-link"),
-            (u.textContent = "Download"),
-            (u.target = "_blank"),
-            m.appendChild(u));
-          const g = n.assets.find((e) => e.name === `${t.name}.sig`);
-          if (g) {
-            const e = document.createElement("a");
-            ((e.href = g.browser_download_url),
-              (e.className = "download-link sig"),
-              (e.textContent = ".sig"),
-              (e.target = "_blank"),
-              m.appendChild(e));
-          }
-          (a.appendChild(o), a.appendChild(m), e.appendChild(a));
-        }));
-    } else
-      e.innerHTML =
-        '<p style="color: #9ea2c1; text-align: center;">No downloads available</p>';
-  } catch (n) {
-    (console.error("Error fetching downloads:", n),
-      (e.innerHTML =
-        '<p style="color: #9ea2c1; text-align: center;">Error loading downloads</p>'));
-  }
+  const n = getReleaseData();
+  if (n.assets && n.assets.length > 0) {
+    const t = n.assets.filter(
+        (e) =>
+          !(
+            e.name.endsWith(".sig") ||
+            e.name.endsWith(".txt") ||
+            e.name.endsWith(".json") ||
+            (e.name.includes(".dmg") &&
+              (e.name.includes("aarch64") || e.name.includes("arm64")))
+          ),
+      ),
+      { os: a } = detectOS();
+    (t.sort((e, n) => {
+      const t = (e) => {
+          const n = e.includes(".exe") || e.includes(".msi"),
+            t = e.includes(".dmg"),
+            o = e.includes(".apk"),
+            s = !n && !t && !o;
+          return "Windows" === a && n
+            ? e.includes(".exe")
+              ? 1
+              : 2
+            : ("macOS" === a && t) ||
+                ("Android" === a && o) ||
+                ("Linux" === a && s)
+              ? 1
+              : e.includes(".exe")
+                ? 10
+                : e.includes(".msi")
+                  ? 11
+                  : e.includes(".dmg")
+                    ? 20
+                    : e.includes(".apk")
+                      ? 30
+                      : 40;
+        },
+        o = t(e.name),
+        s = t(n.name);
+      return o !== s ? o - s : e.name.localeCompare(n.name);
+    }),
+      t.forEach((t) => {
+        const a = document.createElement("div");
+        a.className = "download-item";
+        const o = document.createElement("div");
+        o.className = "download-name";
+        const s = document.createElement("div");
+        s.className = "os-icon";
+        const { platform: i, variant: c } = simplifyFilename(t.name);
+        let l = "Linux";
+        (t.name.includes(".exe") || t.name.includes(".msi")
+          ? (l = "Windows")
+          : t.name.includes(".apk")
+            ? (l = "Android")
+            : t.name.includes(".dmg") && (l = "macOS"),
+          (s.innerHTML = getOSIcon(l)));
+        const d = document.createElement("div");
+        d.className = "download-name-text";
+        const r = document.createElement("span");
+        if (
+          ((r.className = "download-name-platform"),
+          (r.textContent = i),
+          d.appendChild(r),
+          c)
+        ) {
+          const e = document.createElement("span");
+          ((e.className = "download-name-variant"),
+            (e.textContent = c),
+            d.appendChild(e));
+        }
+        (o.appendChild(s), o.appendChild(d));
+        const m = document.createElement("div");
+        m.className = "download-links";
+        const u = document.createElement("a");
+        ((u.href = t.browser_download_url),
+          (u.className = "download-link"),
+          (u.textContent = "Download"),
+          (u.target = "_blank"),
+          m.appendChild(u));
+        const g = n.assets.find((e) => e.name === `${t.name}.sig`);
+        if (g) {
+          const e = document.createElement("a");
+          ((e.href = g.browser_download_url),
+            (e.className = "download-link sig"),
+            (e.textContent = ".sig"),
+            (e.target = "_blank"),
+            m.appendChild(e));
+        }
+        (a.appendChild(o), a.appendChild(m), e.appendChild(a));
+      }));
+  } else
+    e.innerHTML =
+      '<p style="color: #9ea2c1; text-align: center;">No downloads available</p>';
 }
 const toggleBtn = document.getElementById("toggleDownloads"),
   downloadsList = document.getElementById("downloadsList");
